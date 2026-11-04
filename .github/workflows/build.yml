@@ -29,12 +29,35 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -f "$GITHUB_WORKSPACE/NexusWaypoints_SOURCE.zip" ]]; then
-            echo "Extracting Nexus Waypoints source..."
+          SOURCE_ARCHIVE=""
+
+          for candidate in \
+            "$GITHUB_WORKSPACE/NexusWaypoints_SOURCE_FIXED.zip" \
+            "$GITHUB_WORKSPACE/NexusWaypoints_SOURCE.zip"; do
+            if [[ -f "$candidate" ]]; then
+              SOURCE_ARCHIVE="$candidate"
+              break
+            fi
+          done
+
+          if [[ -z "$SOURCE_ARCHIVE" ]]; then
+            shopt -s nullglob
+            for candidate in "$GITHUB_WORKSPACE"/NexusWaypoints_SOURCE*.zip; do
+              if [[ -f "$candidate" ]]; then
+                SOURCE_ARCHIVE="$candidate"
+                break
+              fi
+            done
+            shopt -u nullglob
+          fi
+
+          if [[ -n "$SOURCE_ARCHIVE" ]]; then
+            echo "Found: $(basename "$SOURCE_ARCHIVE")"
+
             rm -rf "$GITHUB_WORKSPACE/_nexus_source"
             mkdir -p "$GITHUB_WORKSPACE/_nexus_source"
 
-            unzip -q "$GITHUB_WORKSPACE/NexusWaypoints_SOURCE.zip" \
+            unzip -q "$SOURCE_ARCHIVE" \
               -d "$GITHUB_WORKSPACE/_nexus_source"
 
             SEARCH_ROOT="$GITHUB_WORKSPACE/_nexus_source"
@@ -43,16 +66,15 @@ jobs:
           fi
 
           CMAKE_FILE="$(find "$SEARCH_ROOT" \
-            -type f \
-            -name CMakeLists.txt \
+            -type f -name CMakeLists.txt \
             -not -path '*/.git/*' \
             -not -path '*/build-nexus/*' \
             -print -quit)"
 
           if [[ -z "$CMAKE_FILE" ]]; then
             echo "::error::CMakeLists.txt was not found."
-            echo "Upload NexusWaypoints_SOURCE.zip to the repository root."
-            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f | sort
+            find "$GITHUB_WORKSPACE" -maxdepth 4 -type f \
+              -not -path '*/.git/*' | sort | head -100
             exit 1
           fi
 
@@ -69,13 +91,13 @@ jobs:
 
           for file in "${REQUIRED_FILES[@]}"; do
             if [[ ! -f "$PROJECT_DIR/$file" ]]; then
-              echo "::error::Missing project file: $PROJECT_DIR/$file"
+              echo "::error::Missing file: $PROJECT_DIR/$file"
               exit 1
             fi
           done
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-          echo "Using project: $PROJECT_DIR"
+          echo "Using source: $PROJECT_DIR"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -84,12 +106,9 @@ jobs:
           accept-android-sdk-licenses: true
 
       - name: Install Android NDK r28c
-        shell: bash
         run: |
           set -euo pipefail
-
           sdkmanager --install 'ndk;28.2.13676358'
-
           test -f "$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake"
 
       - name: Set up xmake
@@ -119,7 +138,6 @@ jobs:
 
           if [[ -z "$BT_PACK" ]]; then
             echo "::error::BedrockTools.levipack was not produced."
-            find build -maxdepth 6 -type f | sort
             exit 1
           fi
 
@@ -172,8 +190,8 @@ jobs:
           LIBRARY="$GITHUB_WORKSPACE/build-nexus/out/arm64-v8a/libnexus_waypoints.so"
 
           if [[ ! -f "$LIBRARY" ]]; then
-            echo "::error::Native library was not created: $LIBRARY"
-            find "$GITHUB_WORKSPACE/build-nexus" -type f | sort
+            echo "::error::Native library was not created."
+            find "$GITHUB_WORKSPACE/build-nexus" -type f | sort | tail -100
             exit 1
           fi
 

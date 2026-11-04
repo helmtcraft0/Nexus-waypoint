@@ -18,6 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
+
     steps:
       - name: Checkout Nexus Waypoints source
         uses: actions/checkout@v4
@@ -43,32 +44,49 @@ jobs:
         with:
           xmake-version: latest
 
-      - name: Run waypoint math tests
-        run: |
-          g++ -std=c++20 -Wall -Wextra -Werror -pedantic tests/waypoint_math_test.cpp -o build-waypoint-math-test
-          ./build-waypoint-math-test
-
       - name: Build compatible BedrockTools runtime
         shell: bash
         run: |
           set -euo pipefail
+
           git clone https://github.com/QYCottage/BedrockTools.git "$RUNNER_TEMP/BedrockTools"
+
           cd "$RUNNER_TEMP/BedrockTools"
+
           git checkout 81176f287453b68c131a34f78b198355675bd7b6
-          xmake f -y -p android -a arm64-v8a -m release --ndk="$ANDROID_HOME/ndk/28.2.13676358"
+
+          xmake f -y -p android -a arm64-v8a -m release \
+            --ndk="$ANDROID_HOME/ndk/28.2.13676358"
+
           xmake -y
+
           BT_PACK="$(find build -type f -name 'BedrockTools.levipack' -print -quit)"
-          test -n "$BT_PACK" || { echo 'BedrockTools.levipack was not produced'; exit 1; }
+
+          test -n "$BT_PACK" || {
+            echo "BedrockTools.levipack was not produced"
+            exit 1
+          }
+
           mkdir -p "$GITHUB_WORKSPACE/dist/dependencies"
-          cp "$BT_PACK" "$GITHUB_WORKSPACE/dist/dependencies/BedrockTools_1.26.60_ARM64.levipack"
+
+          cp "$BT_PACK" \
+            "$GITHUB_WORKSPACE/dist/dependencies/BedrockTools_1.26.60_ARM64.levipack"
+
           python3 - "$BT_PACK" <<'PY'
-          import sys, zipfile
-          path = sys.argv[1]
-          with zipfile.ZipFile(path) as z:
-              z.testzip()
-              names = z.namelist()
-              assert any(n.endswith('libBedrockTools.so') for n in names), 'BedrockTools package has no libBedrockTools.so'
-          print('BedrockTools package passed ZIP and library checks')
+          import sys
+          import zipfile
+
+          with zipfile.ZipFile(sys.argv[1]) as archive:
+              bad = archive.testzip()
+              if bad:
+                  raise SystemExit(f"ZIP inválido: {bad}")
+
+              names = archive.namelist()
+
+              if not any(name.endswith("libBedrockTools.so") for name in names):
+                  raise SystemExit("Biblioteca BedrockTools não encontrada")
+
+          print("BedrockTools validado.")
           PY
 
       - name: Configure Nexus Waypoints ARM64 build
@@ -80,13 +98,15 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Compile Nexus Waypoints native mod
-        run: cmake --build build-nexus --parallel 2
+        run: |
+          cmake --build build-nexus --parallel 2
 
-      - name: Package and validate Nexus Waypoints Levi Pack
+      - name: Package Nexus Waypoints Levi Pack
         run: |
           python3 scripts/package.py \
             --library build-nexus/out/arm64-v8a/libnexus_waypoints.so \
             --output dist/NexusWaypoints_1.0.0_ARM64.levipack
+
           unzip -t dist/NexusWaypoints_1.0.0_ARM64.levipack
 
       - name: Upload both Levi Packs

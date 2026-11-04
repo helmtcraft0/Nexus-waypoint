@@ -4,12 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths:
-      - 'CMakeLists.txt'
-      - 'manifest.json'
-      - 'src/**'
-      - 'scripts/**'
-      - '.github/workflows/build.yml'
 
 permissions:
   contents: read
@@ -26,7 +20,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3
+          sudo apt-get install -y cmake ninja-build python3 unzip
 
       - name: Set up Android SDK and NDK
         uses: android-actions/setup-android@v4
@@ -44,31 +38,51 @@ jobs:
         with:
           xmake-version: latest
 
+      - name: Find Nexus Waypoints project folder
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CMAKE_FILE="$(find . -type f -name CMakeLists.txt -not -path './.git/*' -print -quit)"
+
+          if [[ -z "$CMAKE_FILE" ]]; then
+            echo "ERROR: CMakeLists.txt was not found in the repository."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$CMAKE_FILE")"
+
+          for required in manifest.json icon.png src/NexusWaypoints.cpp scripts/package.py; do
+            if [[ ! -f "$PROJECT_DIR/$required" ]]; then
+              echo "ERROR: Missing $PROJECT_DIR/$required"
+              exit 1
+            fi
+          done
+
+          PROJECT_DIR="${PROJECT_DIR#./}"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Nexus Waypoints project found in: $PROJECT_DIR"
+
       - name: Build compatible BedrockTools runtime
         shell: bash
         run: |
           set -euo pipefail
 
           git clone https://github.com/QYCottage/BedrockTools.git "$RUNNER_TEMP/BedrockTools"
-
           cd "$RUNNER_TEMP/BedrockTools"
-
           git checkout 81176f287453b68c131a34f78b198355675bd7b6
 
           xmake f -y -p android -a arm64-v8a -m release \
             --ndk="$ANDROID_HOME/ndk/28.2.13676358"
-
           xmake -y
 
           BT_PACK="$(find build -type f -name 'BedrockTools.levipack' -print -quit)"
-
-          test -n "$BT_PACK" || {
-            echo "BedrockTools.levipack was not produced"
+          if [[ -z "$BT_PACK" ]]; then
+            echo "ERROR: BedrockTools.levipack was not produced."
             exit 1
-          }
+          fi
 
           mkdir -p "$GITHUB_WORKSPACE/dist/dependencies"
-
           cp "$BT_PACK" \
             "$GITHUB_WORKSPACE/dist/dependencies/BedrockTools_1.26.60_ARM64.levipack"
 
@@ -77,34 +91,42 @@ jobs:
           import zipfile
 
           with zipfile.ZipFile(sys.argv[1]) as archive:
-              bad = archive.testzip()
-              if bad:
-                  raise SystemExit(f"ZIP inválido: {bad}")
+              bad_file = archive.testzip()
+              if bad_file:
+                  raise SystemExit(f"Invalid BedrockTools ZIP member: {bad_file}")
+              if not any(name.endswith("libBedrockTools.so") for name in archive.namelist()):
+                  raise SystemExit("BedrockTools library libBedrockTools.so was not found")
 
-              names = archive.namelist()
-
-              if not any(name.endswith("libBedrockTools.so") for name in names):
-                  raise SystemExit("Biblioteca BedrockTools não encontrada")
-
-          print("BedrockTools validado.")
+          print("BedrockTools package validated.")
           PY
 
       - name: Configure Nexus Waypoints ARM64 build
+        shell: bash
         run: |
-          cmake -S . -B build-nexus -G Ninja \
+          set -euo pipefail
+          cmake -S "$PROJECT_DIR" -B build-nexus -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_HOME/ndk/28.2.13676358/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-24 \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Compile Nexus Waypoints native mod
-        run: |
-          cmake --build build-nexus --parallel 2
+        run: cmake --build build-nexus --parallel 2
 
-      - name: Package Nexus Waypoints Levi Pack
+      - name: Package and validate Nexus Waypoints Levi Pack
+        shell: bash
         run: |
-          python3 scripts/package.py \
-            --library build-nexus/out/arm64-v8a/libnexus_waypoints.so \
+          set -euo pipefail
+
+          LIBRARY="build-nexus/out/arm64-v8a/libnexus_waypoints.so"
+          test -f "$LIBRARY" || {
+            echo "ERROR: Native library was not created: $LIBRARY"
+            exit 1
+          }
+
+          python3 "$PROJECT_DIR/scripts/package.py" \
+            --project "$PROJECT_DIR" \
+            --library "$LIBRARY" \
             --output dist/NexusWaypoints_1.0.0_ARM64.levipack
 
           unzip -t dist/NexusWaypoints_1.0.0_ARM64.levipack
